@@ -1,0 +1,10 @@
+color = ''
+project-name = 'default'
+
+[default]
+account_id = 'acct_1SAWJbCrt2ZrmIbK'
+device_name = 'HANNU-P14s'
+display_name = 'Haky76 sandbox'
+test_mode_api_key = 'test_mode_api_key = "PLACEHOLDER"'
+test_mode_key_expires_at = '2025-12-22'
+test_mode_pub_key = 'pk_test_51SAWJbCrt2ZrmIbKY9JNHWPU2hyOFSRqecUki4pNlkHn5hxNSY8McmpqzRRJAb1LTt2OBDj7RzPrsdZt1iIoP1ZQ006nsrVk9R'

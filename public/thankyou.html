@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="fi">
+<head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0">
+<title>Kiitos! - Lisenssin aktivointi</title>
+<style>body{font-family:system-ui,Segoe UI,Roboto,Arial,sans-serif;max-width:680px;margin:40px auto;padding:0 16px;line-height:1.6}</style>
+</head>
+<body>
+<h1>Kiitos ostosta!</h1>
+<p id="msg">Aktivoidaan lisenssiä…</p>
+<script>
+(async () => {
+  const url = new URL(location.href);
+  const sid = url.searchParams.get("session_id");
+  if (!sid) { document.getElementById('msg').textContent = 'Puuttuva session_id.'; return; }
+  try {
+    const r = await fetch('/api/claim?session_id=' + encodeURIComponent(sid));
+    const j = await r.json();
+    if (j.ok && j.token) {
+      location.replace('/?token=' + encodeURIComponent(j.token));
+    } else {
+      document.getElementById('msg').textContent = 'Lisenssin aktivointi epäonnistui. Ole hyvä ja ota yhteyttä tukeen.';
+    }
+  } catch (e) {
+    document.getElementById('msg').textContent = 'Virhe palveluyhteydessä.';
+  }
+})();
+</script>
+</body></html>
