@@ -16,6 +16,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
     const resend = new Resend(RESEND_API_KEY);
 
+    // Body: { to, subject, html?, text? }
     const body = typeof req.body === 'string' ? safeParse(req.body) ?? {} : (req.body ?? {});
     const to = String(body?.to ?? '').trim();
     const subject = String(body?.subject ?? 'Tuntihintasi testiviesti');
@@ -30,7 +31,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       subject,
       html,
       text,
-      reply_to: EMAIL_REPLY_TO || undefined,
+      // 🔧 tämä on oikea nimi:
+      replyTo: EMAIL_REPLY_TO || undefined,
     });
 
     res.status(200).json({ ok: true, id: (resp as any)?.data?.id ?? null });
