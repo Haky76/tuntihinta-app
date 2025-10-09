@@ -1,9 +1,4 @@
 // api/stripe-webhook.ts
-export default async function handler(req: VercelRequest, res: VercelResponse) {
-  console.error("WEBHOOK DBG: VERSION=V1 @", new Date().toISOString());
-  res.setHeader("x-webhook-version", "V1");
-  // ... muu koodi ...
-
 import type { VercelRequest, VercelResponse } from "@vercel/node";
 import Stripe from "stripe";
 import { kv } from "@vercel/kv";
@@ -39,6 +34,7 @@ async function getEmailFromEvent(event: Stripe.Event): Promise<string | null> {
   if (event.type === "invoice.paid") {
     const invoice = event.data.object as Stripe.Invoice;
     if (invoice.customer_email) return invoice.customer_email;
+
     if (typeof invoice.customer === "string") {
       const customer = await stripe.customers.retrieve(invoice.customer);
       if (!customer.deleted) {
@@ -51,8 +47,12 @@ async function getEmailFromEvent(event: Stripe.Event): Promise<string | null> {
   return null;
 }
 
-// 🔧 PÄÄHANDLERI
+// 🔧 PÄÄHANDLERI – VAIN YKSI!
 export default async function handler(req: VercelRequest, res: VercelResponse) {
+  // Debug-header ja -loki näkyvät Vercelin request-paneelissa
+  console.error("WEBHOOK DBG: VERSION=V1 @", new Date().toISOString());
+  res.setHeader("x-webhook-version", "V1");
+
   if (req.method !== "POST") {
     res.status(405).send("Method Not Allowed");
     return;
@@ -85,7 +85,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     );
     console.log("WEBHOOK event verified:", event.type, event.id);
   } catch (err: any) {
-    console.error("WEBHOOK signature verification failed:", err.message);
+    console.error("WEBHOOK signature verification failed:", err?.message || err);
     res.status(400).send(`Webhook signature verification failed: ${err?.message}`);
     return;
   }
@@ -93,7 +93,6 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   try {
     console.log("WEBHOOK processing event:", event.type);
 
-    // ✅ Käsitellään vain nämä tapahtumat
     if (event.type === "checkout.session.completed" || event.type === "invoice.paid") {
       const email = await getEmailFromEvent(event);
       console.log("WEBHOOK extracted email:", email);
@@ -121,11 +120,12 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       );
 
       console.log("WEBHOOK sending email via Resend...");
-
       try {
         const r = await resend.emails.send({
-          from: process.env.EMAIL_FROM!,
+          from: process.env.EMAIL_FROM!,         // esim. 'Tuntihintasi <no-reply@tuntihintasi.fi>'
           to: email,
+          // Jos haluat, voit lisätä vastauksen ohjauksen näin:
+          // replyTo: process.env.EMAIL_REPLY_TO, // HUOM: camelCase
           subject: "Tuntihintasi – kuitti ja tunnuskoodi",
           html: `
             <div style="font-family: Arial, sans-serif; line-height: 1.6;">
@@ -147,8 +147,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     res.status(200).send("ok");
   } catch (err: any) {
     console.error("WEBHOOK main try/catch error:", err);
-    res.status(200).send("ok"); // 200, ettei Stripe retryaa
+    // Palautetaan 200, ettei Stripe retrya loputtomiin
+    res.status(200).send("ok");
   }
 }
+
 
 
