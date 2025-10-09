@@ -5,18 +5,15 @@ import { kv } from "@vercel/kv";
 import { v4 as uuid } from "uuid";
 import { Resend } from "resend";
 
-/**
- * TÄRKEÄ: Stripe-allekirjoitus tarvitsee raakabodyn, joten poistetaan bodyParser.
- */
+// Stripe allekirjoitus tarvitsee raakabodyn
 export const config = { api: { bodyParser: false } };
 
-/** Stripe & Resend */
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY as string, {
   apiVersion: "2024-06-20",
 });
 const resend = new Resend(process.env.RESEND_API_KEY as string);
 
-/** Pieni apuri raakabodyn lukemiseen */
+// Lue raakabody
 function readRawBody(req: VercelRequest): Promise<Buffer> {
   return new Promise((resolve, reject) => {
     const chunks: Buffer[] = [];
@@ -26,33 +23,27 @@ function readRawBody(req: VercelRequest): Promise<Buffer> {
   });
 }
 
-/** Poimi asiakkaan email Stripe-tapahtumasta */
+// Poimi email tapahtumasta
 async function getEmailFromEvent(event: Stripe.Event): Promise<string | null> {
   if (event.type === "checkout.session.completed") {
     const session = event.data.object as Stripe.Checkout.Session;
     return session.customer_details?.email || session.customer_email || null;
   }
-
   if (event.type === "invoice.paid") {
     const invoice = event.data.object as Stripe.Invoice;
-
     if (invoice.customer_email) return invoice.customer_email;
-
     if (typeof invoice.customer === "string") {
       const customer = await stripe.customers.retrieve(invoice.customer);
       if (!("deleted" in customer) || !customer.deleted) {
         return (customer.email as string) || null;
       }
     }
-    return null;
   }
-
   return null;
 }
 
-/** 🔧 VARSINAINEN WEBHOOK-HANDLER – vain yksi default-export! */
+// Päähandler
 export default async function handler(req: VercelRequest, res: VercelResponse) {
-  // näkyy Vercelin oikeassa laidassa response-headersissa
   res.setHeader("x-webhook-version", "V1");
   console.error("WEBHOOK DBG: VERSION=V1 @", new Date().toISOString());
 
@@ -79,7 +70,6 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
   let event: Stripe.Event;
   try {
-    // HUOM: stripe.webhooks (ei 'webhook' eikä monikossa väärin)
     event = stripe.webhooks.constructEvent(
       raw,
       sig,
@@ -97,7 +87,6 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   try {
     console.log("WEBHOOK processing event:", event.type);
 
-    // käsitellään vain nämä
     if (event.type === "checkout.session.completed" || event.type === "invoice.paid") {
       const email = await getEmailFromEvent(event);
       console.log("WEBHOOK extracted email:", email);
@@ -108,47 +97,34 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         return;
       }
 
-      // luodaan lisenssi & kirjautumistunnus
       const license = uuid().toUpperCase();
       const token = uuid().replace(/-/g, "").toUpperCase();
 
-      console.log("WEBHOOK storing KV data...");
+      console.log("WEBHOOK storing KV data…");
       await kv.set(
         `license:${email}`,
-        JSON.stringify({
-          email,
-          active: true,
-          createdAt: Date.now(),
-          evt: event.id,
-        }),
-        { ex: 60 * 60 * 24 * 30 } // 30 päivää
+        JSON.stringify({ email, active: true, createdAt: Date.now(), evt: event.id }),
+        { ex: 60 * 60 * 24 * 30 }
       );
       await kv.set(
         `token:${token}`,
-        JSON.stringify({
-          license,
-          createdAt: Date.now(),
-        }),
-        { ex: 60 * 60 * 24 } // 24 h
+        JSON.stringify({ license, createdAt: Date.now() }),
+        { ex: 60 * 60 * 24 }
       );
 
-      // lähetetään kuitti + tunnukset
-      console.log("WEBHOOK sending email via Resend...");
+      console.log("WEBHOOK sending email via Resend…");
       try {
-        const { data, error } = await resend.emails.send({
+        const sendRes = await resend.emails.send({
           from: process.env.EMAIL_FROM!, // esim. 'Tuntihintasi <no-reply@tuntihintasi.fi>'
           to: email,
-          // Jos haluat erillisen reply-osoitteen, käytä camelCasea:
+          // Jos haluat erillisen vastausosoitteen:
           // replyTo: process.env.EMAIL_REPLY_TO,
           subject: "Tuntihintasi – kuitti ja tunnuskoodi",
           html: `
-            <div style="font-family: Arial, sans-serif; line-height: 1.6;">
+            <div style="font-family: Arial, sans-serif; line-height:1.6">
               <h2>Kiitos tilauksesta!</h2>
               <p>Lisenssisi on nyt aktivoitu.</p>
-              <p>
-                <b>Lisenssikoodi:</b> ${license}<br/>
-                <b>Kirjautumistunnus:</b> ${token}
-              </p>
+              <p><b>Lisenssikoodi:</b> ${license}<br/><b>Kirjautumistunnus:</b> ${token}</p>
               <p>Voit kirjautua sovellukseen syöttämällä yllä olevan tunnuksen kirjautumissivulla.</p>
               <hr/>
               <small>Tämä viesti lähetettiin Resend-palvelun kautta (${process.env.EMAIL_FROM}).</small>
@@ -156,23 +132,19 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           `,
         });
 
-        if (error) {
-          console.error("WEBHOOK Resend error:", error);
-        } else {
-          console.log("WEBHOOK Resend ok, message id:", data?.id);
-        }
+        // EI kosketa .id-kenttään -> ei TS-virhettä
+        console.log(
+          "WEBHOOK Resend raw:",
+          JSON.stringify(sendRes, null, 2)
+        );
       } catch (emailErr: any) {
         console.error("WEBHOOK Resend throw:", emailErr?.message || emailErr);
       }
     }
 
-    // vastataan 200 aina, ettei Stripe retrya turhaan
-    res.status(200).send("ok");
+    res.status(200).send("ok"); // palauta 200 ettei Stripe retrya
   } catch (err: any) {
     console.error("WEBHOOK main try/catch error:", err);
     res.status(200).send("ok");
   }
 }
-
-
-
