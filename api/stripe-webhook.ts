@@ -5,16 +5,16 @@ import { kv } from "@vercel/kv";
 import { v4 as uuid } from "uuid";
 import { Resend } from "resend";
 
-// Raakabody allekirjoituksen tarkistukseen
+// TÄRKEÄ: raakabody allekirjoitusta varten
 export const config = { api: { bodyParser: false } };
 
-// Stripe ja Resend alustukset
+// Stripe & Resend
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY as string, {
   apiVersion: "2024-06-20",
 });
 const resend = new Resend(process.env.RESEND_API_KEY as string);
 
-// Funktio: lukee raakabodyn
+// Lue raakabody
 function readRawBody(req: VercelRequest): Promise<Buffer> {
   return new Promise((resolve, reject) => {
     const chunks: Buffer[] = [];
@@ -24,7 +24,7 @@ function readRawBody(req: VercelRequest): Promise<Buffer> {
   });
 }
 
-// Funktio: poimii sähköpostin Stripe-tapahtumasta
+// Poimi email Stripe-eventistä
 async function getEmailFromEvent(event: Stripe.Event): Promise<string | null> {
   if (event.type === "checkout.session.completed") {
     const session = event.data.object as Stripe.Checkout.Session;
@@ -47,32 +47,31 @@ async function getEmailFromEvent(event: Stripe.Event): Promise<string | null> {
   return null;
 }
 
-// 🔧 PÄÄHANDLERI – VAIN YKSI!
+// PÄÄHANDLERI
 export default async function handler(req: VercelRequest, res: VercelResponse) {
-  // Debug-header ja -loki näkyvät Vercelin request-paneelissa
-  console.error("WEBHOOK DBG: VERSION=V1 @", new Date().toISOString());
-  res.setHeader("x-webhook-version", "V1");
+  // Helppo versiotagi oikeaan laitaan Vercelissä / Stripe-responsessa
+  res.setHeader("x-webhook-version", "dbg-v2");
 
   if (req.method !== "POST") {
-    res.status(405).send("Method Not Allowed");
+    res.status(405).send("dbg:method-not-allowed");
     return;
   }
 
-  console.log("WEBHOOK STARTED");
+  const marks: string[] = [];
 
+  // 1) Lue raakabody
   let buf: Buffer;
   try {
     buf = await readRawBody(req);
   } catch (err: any) {
-    console.error("WEBHOOK readRawBody error:", err);
-    res.status(400).send(`Failed to read body: ${err?.message || err}`);
+    res.status(400).send(`dbg:readbody-fail:${err?.message || err}`);
     return;
   }
 
+  // 2) Verifioi allekirjoitus
   const sig = req.headers["stripe-signature"] as string | undefined;
   if (!sig) {
-    console.error("WEBHOOK missing stripe-signature header");
-    res.status(400).send("Missing stripe-signature header");
+    res.status(400).send("dbg:no-stripe-signature");
     return;
   }
 
@@ -83,50 +82,52 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       sig,
       process.env.STRIPE_WEBHOOK_SECRET as string
     );
-    console.log("WEBHOOK event verified:", event.type, event.id);
+    marks.push("verified", `type=${event.type}`);
   } catch (err: any) {
-    console.error("WEBHOOK signature verification failed:", err?.message || err);
-    res.status(400).send(`Webhook signature verification failed: ${err?.message}`);
+    res.status(400).send(`dbg:bad-signature:${err?.message || err}`);
     return;
   }
 
   try {
-    console.log("WEBHOOK processing event:", event.type);
-
+    // 3) Kiinnostavat eventit
     if (event.type === "checkout.session.completed" || event.type === "invoice.paid") {
       const email = await getEmailFromEvent(event);
-      console.log("WEBHOOK extracted email:", email);
-
       if (!email) {
-        console.warn("WEBHOOK: No email found, skipping send");
-        res.status(200).send("ok");
+        marks.push("email=missing");
+        res.status(200).send(`dbg:${marks.join(";")}`);
         return;
       }
+      marks.push("email=found");
 
-      // Generoidaan lisenssi ja token
+      // 4) Generoi lisenssi ja token, talleta KV:hen
       const license = uuid().toUpperCase();
       const token = uuid().replace(/-/g, "").toUpperCase();
 
-      console.log("WEBHOOK storing KV data...");
-      await kv.set(
-        `license:${email}`,
-        JSON.stringify({ email, active: true, createdAt: Date.now(), evt: event.id }),
-        { ex: 60 * 60 * 24 * 30 }
-      );
-      await kv.set(
-        `token:${token}`,
-        JSON.stringify({ license, createdAt: Date.now() }),
-        { ex: 60 * 60 * 24 }
-      );
-
-      console.log("WEBHOOK sending email via Resend...");
       try {
-        // Lisätään replyTo vain jos se on määritelty ympäristömuuttujissa
-        const replyTo = process.env.EMAIL_REPLY_TO;
+        await kv.set(
+          `license:${email}`,
+          JSON.stringify({ email, active: true, createdAt: Date.now(), evt: event.id }),
+          { ex: 60 * 60 * 24 * 30 }
+        );
+        await kv.set(
+          `token:${token}`,
+          JSON.stringify({ license, createdAt: Date.now() }),
+          { ex: 60 * 60 * 24 }
+        );
+        marks.push("kv=ok");
+      } catch (kvErr: any) {
+        marks.push(`kv=fail:${(kvErr?.message || kvErr + "").slice(0, 120)}`);
+      }
+
+      // 5) Lähetä kuittisähköposti Resendillä
+      try {
+        const from = process.env.EMAIL_FROM!;
+        const replyTo = process.env.EMAIL_REPLY_TO || undefined; // camelCase
+
         const r = await resend.emails.send({
-          from: process.env.EMAIL_FROM!,          // esim. 'Tuntihintasi <no-reply@tuntihintasi.fi>'
+          from,
           to: email,
-          ...(replyTo ? { replyTo } : {}),        // HUOM: camelCase, ei reply_to
+          ...(replyTo ? { replyTo } : {}),
           subject: "Tuntihintasi – kuitti ja tunnuskoodi",
           html: `
             <div style="font-family: Arial, sans-serif; line-height: 1.6;">
@@ -135,20 +136,23 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
               <p><b>Lisenssikoodi:</b> ${license}<br/>
               <b>Kirjautumistunnus:</b> ${token}</p>
               <hr/>
-              <small>Tämä viesti lähetettiin Resend-palvelun kautta (${process.env.EMAIL_FROM}).</small>
+              <small>Tämä viesti lähetettiin Resend-palvelun kautta (${from}).</small>
             </div>
           `,
         });
-        console.log("WEBHOOK Resend response:", r);
-      } catch (emailErr: any) {
-        console.error("WEBHOOK Resend error:", emailErr?.message || emailErr);
+
+        marks.push(r?.id ? "mail=ok" : "mail=sent-no-id");
+      } catch (mailErr: any) {
+        marks.push(`mail=fail:${(mailErr?.message || mailErr + "").slice(0, 160)}`);
       }
+    } else {
+      // Muiden eventtien kohdalla palauta silti 200
+      marks.push("ignored");
     }
 
-    res.status(200).send("ok");
+    res.status(200).send(`dbg:${marks.join(";")}`);
   } catch (err: any) {
-    console.error("WEBHOOK main try/catch error:", err);
-    // Palautetaan 200, ettei Stripe retrya loputtomiin
-    res.status(200).send("ok");
+    res.status(200).send(`dbg:handler-fail:${(err?.message || err + "").slice(0, 160)}`);
   }
 }
+
