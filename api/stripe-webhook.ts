@@ -141,7 +141,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           `,
         });
 
-        marks.push(r?.id ? "mail=ok" : "mail=sent-no-id");
+        marks.push(r?.data?.id ? "mail=ok" : "mail=sent-no-id");
       } catch (mailErr: any) {
         marks.push(`mail=fail:${(mailErr?.message || mailErr + "").slice(0, 160)}`);
       }
