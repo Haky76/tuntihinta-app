@@ -121,11 +121,12 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
       console.log("WEBHOOK sending email via Resend...");
       try {
+        // Lisätään replyTo vain jos se on määritelty ympäristömuuttujissa
+        const replyTo = process.env.EMAIL_REPLY_TO;
         const r = await resend.emails.send({
-          from: process.env.EMAIL_FROM!,         // esim. 'Tuntihintasi <no-reply@tuntihintasi.fi>'
+          from: process.env.EMAIL_FROM!,          // esim. 'Tuntihintasi <no-reply@tuntihintasi.fi>'
           to: email,
-          // Jos haluat, voit lisätä vastauksen ohjauksen näin:
-          // replyTo: process.env.EMAIL_REPLY_TO, // HUOM: camelCase
+          ...(replyTo ? { replyTo } : {}),        // HUOM: camelCase, ei reply_to
           subject: "Tuntihintasi – kuitti ja tunnuskoodi",
           html: `
             <div style="font-family: Arial, sans-serif; line-height: 1.6;">
@@ -151,6 +152,3 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     res.status(200).send("ok");
   }
 }
-
-
-
