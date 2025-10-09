@@ -1,4 +1,9 @@
 // api/stripe-webhook.ts
+export default async function handler(req: VercelRequest, res: VercelResponse) {
+  console.error("WEBHOOK DBG: VERSION=V1 @", new Date().toISOString());
+  res.setHeader("x-webhook-version", "V1");
+  // ... muu koodi ...
+
 import type { VercelRequest, VercelResponse } from "@vercel/node";
 import Stripe from "stripe";
 import { kv } from "@vercel/kv";
