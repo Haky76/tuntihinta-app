@@ -5,146 +5,168 @@ import { kv } from "@vercel/kv";
 import { v4 as uuid } from "uuid";
 import { Resend } from "resend";
 
-// Stripe allekirjoitus tarvitsee raakabodyn
+// Webhookissa tarvitaan raakabody allekirjoituksen tarkistukseen
 export const config = { api: { bodyParser: false } };
 
+// ======= Alustukset =======
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY as string, {
   apiVersion: "2024-06-20",
 });
 const resend = new Resend(process.env.RESEND_API_KEY as string);
 
-// Lue raakabody
+// Raakabodyn luku Vercelin req:stä
 function readRawBody(req: VercelRequest): Promise<Buffer> {
   return new Promise((resolve, reject) => {
     const chunks: Buffer[] = [];
-    req.on("data", (c) => chunks.push(Buffer.isBuffer(c) ? c : Buffer.from(c)));
+    req.on("data", c => chunks.push(Buffer.isBuffer(c) ? c : Buffer.from(c)));
     req.on("end", () => resolve(Buffer.concat(chunks)));
     req.on("error", reject);
   });
 }
 
-// Poimi email tapahtumasta
+// Poimi sähköpostiosoite Stripe-tapahtumasta
 async function getEmailFromEvent(event: Stripe.Event): Promise<string | null> {
   if (event.type === "checkout.session.completed") {
     const session = event.data.object as Stripe.Checkout.Session;
     return session.customer_details?.email || session.customer_email || null;
   }
+
   if (event.type === "invoice.paid") {
     const invoice = event.data.object as Stripe.Invoice;
     if (invoice.customer_email) return invoice.customer_email;
+
     if (typeof invoice.customer === "string") {
       const customer = await stripe.customers.retrieve(invoice.customer);
-      if (!("deleted" in customer) || !customer.deleted) {
+      if (!("deleted" in customer) || customer.deleted === false) {
         return (customer.email as string) || null;
       }
     }
   }
+
   return null;
 }
 
-// Päähandler
+// ======= PÄÄHANDLERI =======
 export default async function handler(req: VercelRequest, res: VercelResponse) {
-  res.setHeader("x-webhook-version", "V1");
-  console.error("WEBHOOK DBG: VERSION=V1 @", new Date().toISOString());
+  // debug-header näkyy Vercelin oikeassa reunassa
+  res.setHeader("x-webhook-version", "dbg-v3");
+
+  const marks: string[] = [];
+  marks.push(`start method=${req.method}`);
 
   if (req.method !== "POST") {
-    res.status(405).send("Method Not Allowed");
-    return;
+    marks.push("bad-method");
+    return res.status(405).json({ ok: false, error: "method-not-allowed", marks });
   }
 
-  let raw: Buffer;
+  // 1) Lue raakabody
+  let buf: Buffer;
   try {
-    raw = await readRawBody(req);
-  } catch (err: any) {
-    console.error("WEBHOOK readRawBody error:", err);
-    res.status(400).send(`Failed to read body: ${err?.message || err}`);
-    return;
+    buf = await readRawBody(req);
+    marks.push(`body=${buf.length}b`);
+  } catch (e: any) {
+    marks.push(`readBodyFail=${e?.message || String(e)}`);
+    return res.status(400).json({ ok: false, error: "failed-to-read-body", detail: e?.message, marks });
   }
 
+  // 2) Verifioi Stripe-allekirjoitus
   const sig = req.headers["stripe-signature"] as string | undefined;
+  marks.push(`hasSig=${!!sig}`);
   if (!sig) {
-    console.error("WEBHOOK missing stripe-signature header");
-    res.status(400).send("Missing stripe-signature header");
-    return;
+    return res.status(400).json({ ok: false, error: "missing-stripe-signature", marks });
   }
 
   let event: Stripe.Event;
   try {
     event = stripe.webhooks.constructEvent(
-      raw,
+      buf,
       sig,
       process.env.STRIPE_WEBHOOK_SECRET as string
     );
-    console.log("WEBHOOK event verified:", event.type, event.id);
-  } catch (err: any) {
-    console.error("WEBHOOK signature verification failed:", err?.message || err);
-    res
-      .status(400)
-      .send(`Webhook signature verification failed: ${err?.message || err}`);
-    return;
+    marks.push(`evOk type=${event.type} id=${event.id}`);
+  } catch (e: any) {
+    marks.push(`evFail=${e?.message || String(e)}`);
+    return res.status(400).json({ ok: false, error: "signature-verification-failed", detail: e?.message, marks });
   }
 
   try {
-    console.log("WEBHOOK processing event:", event.type);
-
+    // 3) Käsittele kiinnostavat tapahtumat
     if (event.type === "checkout.session.completed" || event.type === "invoice.paid") {
       const email = await getEmailFromEvent(event);
-      console.log("WEBHOOK extracted email:", email);
+      marks.push(`email=${email || "null"}`);
 
       if (!email) {
-        console.warn("WEBHOOK: No email found, skipping send");
-        res.status(200).send("ok");
-        return;
+        marks.push("no-email-skip");
+        return res.status(200).json({ ok: true, marks });
       }
 
+      // 4) Luo lisenssi ja token
       const license = uuid().toUpperCase();
-      const token = uuid().replace(/-/g, "").toUpperCase();
+      const token   = uuid().replace(/-/g, "").toUpperCase();
+      marks.push("license+token");
 
-      console.log("WEBHOOK storing KV data…");
-      await kv.set(
-        `license:${email}`,
-        JSON.stringify({ email, active: true, createdAt: Date.now(), evt: event.id }),
-        { ex: 60 * 60 * 24 * 30 }
-      );
-      await kv.set(
-        `token:${token}`,
-        JSON.stringify({ license, createdAt: Date.now() }),
-        { ex: 60 * 60 * 24 }
-      );
-
-      console.log("WEBHOOK sending email via Resend…");
+      // 5) Tallenna KV:hen
       try {
-        const sendRes = await resend.emails.send({
-          from: process.env.EMAIL_FROM!, // esim. 'Tuntihintasi <no-reply@tuntihintasi.fi>'
+        await kv.set(
+          `license:${email}`,
+          JSON.stringify({ email, active: true, createdAt: Date.now(), evt: event.id }),
+          { ex: 60 * 60 * 24 * 30 } // 30 vrk
+        );
+        await kv.set(
+          `token:${token}`,
+          JSON.stringify({ license, createdAt: Date.now() }),
+          { ex: 60 * 60 * 24 } // 24 h
+        );
+        marks.push("kv:ok");
+      } catch (kvErr: any) {
+        marks.push(`kvFail=${kvErr?.message || String(kvErr)}`);
+      }
+
+      // 6) Lähetä kuittisähköposti Resendillä
+      try {
+        const from = process.env.EMAIL_FROM!;                            // esimerkki: 'Tuntihintasi <no-reply@tuntihintasi.fi>'
+        const replyTo = process.env.EMAIL_REPLY_TO || undefined;         // HUOM: camelCase
+
+        const html = `
+          <div style="font-family: Arial, sans-serif; line-height: 1.6;">
+            <h2>Kiitos tilauksesta!</h2>
+            <p>Lisenssisi on nyt aktivoitu.</p>
+            <p><b>Lisenssikoodi:</b> ${license}<br/>
+            <b>Kirjautumistunnus:</b> ${token}</p>
+            <hr/>
+            <small>Tämä viesti lähetettiin Resend-palvelun kautta (${from}).</small>
+          </div>
+        `;
+
+        const r = await resend.emails.send({
+          from,
           to: email,
-          // Jos haluat erillisen vastausosoitteen:
-          // replyTo: process.env.EMAIL_REPLY_TO,
+          replyTo,                        // vain jos määritelty
           subject: "Tuntihintasi – kuitti ja tunnuskoodi",
-          html: `
-            <div style="font-family: Arial, sans-serif; line-height:1.6">
-              <h2>Kiitos tilauksesta!</h2>
-              <p>Lisenssisi on nyt aktivoitu.</p>
-              <p><b>Lisenssikoodi:</b> ${license}<br/><b>Kirjautumistunnus:</b> ${token}</p>
-              <p>Voit kirjautua sovellukseen syöttämällä yllä olevan tunnuksen kirjautumissivulla.</p>
-              <hr/>
-              <small>Tämä viesti lähetettiin Resend-palvelun kautta (${process.env.EMAIL_FROM}).</small>
-            </div>
-          `,
+          html,
         });
 
-        // EI kosketa .id-kenttään -> ei TS-virhettä
-        console.log(
-          "WEBHOOK Resend raw:",
-          JSON.stringify(sendRes, null, 2)
-        );
-      } catch (emailErr: any) {
-        console.error("WEBHOOK Resend throw:", emailErr?.message || emailErr);
+        // Resend-tyypitys vaihtelee – haetaan id turvallisesti.
+        const mailId =
+          r && typeof (r as any).data?.id === "string"
+            ? (r as any).data.id
+            : null;
+
+        marks.push(mailId ? `mailOk id=${mailId}` : "mailSentNoId");
+      } catch (mailErr: any) {
+        marks.push(`mailFail=${mailErr?.message || String(mailErr)}`);
       }
+    } else {
+      marks.push(`ignored type=${event.type}`);
     }
 
-    res.status(200).send("ok"); // palauta 200 ettei Stripe retrya
+    // 7) Palauta aina JSON, jotta näet marksit Vercelissä Response-kohdassa
+    return res.status(200).json({ ok: true, marks });
   } catch (err: any) {
-    console.error("WEBHOOK main try/catch error:", err);
-    res.status(200).send("ok");
+    return res.status(200).json({
+      ok: false,
+      error: err?.message || String(err),
+      marks,
+    });
   }
 }
