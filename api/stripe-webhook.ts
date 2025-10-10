@@ -160,13 +160,12 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       marks.push(`ignored type=${event.type}`);
     }
 
-    // 7) Palauta aina JSON, jotta näet marksit Vercelissä Response-kohdassa
-    return res.status(200).json({ ok: true, marks });
-  } catch (err: any) {
-    return res.status(200).json({
-      ok: false,
-      error: err?.message || String(err),
-      marks,
-    });
-  }
+    const out = { ok: true, marks };
+    console.error("WEBHOOK OUT", JSON.stringify(out, null, 2));
+    return res.status(200).json(out);
+   } catch (err: any) {
+    const out = { ok: false, error: err?.message || String(err), marks };
+    console.error("WEBHOOK OUT", JSON.stringify(out, null, 2));
+    return res.status(200).json(out);
 }
+
