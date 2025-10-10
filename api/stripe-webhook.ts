@@ -160,16 +160,17 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       marks.push(`ignored type=${event.type}`);
     }
 
- const out = { ok: true, marks };
-console.log("WEBHOOK OUT", JSON.stringify(out, null, 2));
-await new Promise((resolve) => setTimeout(resolve, 200)); // pieni viive
+const out = { ok: true, marks };
+console.error("WEBHOOK OUT >>>", JSON.stringify(out, null, 2));
+await new Promise((resolve) => setTimeout(resolve, 200));
 return res.status(200).json(out);
 
 } catch (err: any) {
   const out = { ok: false, error: err?.message || String(err), marks };
-  console.log("WEBHOOK OUT", JSON.stringify(out, null, 2));
-  await new Promise((resolve) => setTimeout(resolve, 200)); // varmistaa logien flushin
-  return res.status(200).json(out);
+console.error("WEBHOOK OUT >>>", JSON.stringify(out, null, 2));
+await new Promise((resolve) => setTimeout(resolve, 200)); // pieni viive logien flush
+return res.status(200).json(out);
+
 }
 
 
