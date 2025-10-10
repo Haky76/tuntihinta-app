@@ -63,10 +63,14 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   const marks: string[] = [];
   marks.push(`start method=${req.method}`);
 
-  if (req.method !== "POST") {
-    marks.push("bad-method");
-    res.setHeader("x-marks", marks.join("|").slice(0, 500));
-    return res.status(405).json({ ok: false, error: "method-not-allowed", marks });
+if (req.method !== "POST") {
+  marks.push("bad-method");
+  res.setHeader("x-marks", marks.join("|").slice(0, 500));
+  return res
+    .status(405)
+    .json({ ok: false, error: "method-not-allowed", marks });
+}
+
   }
 
   // 1) Lue raakabody
@@ -74,19 +78,24 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   try {
     buf = await readRawBody(req);
     marks.push(`body=${buf.length}b`);
-  } catch (e: any) {
-    marks.push(`readBodyFail=${e?.message || String(e)}`);
-    res.setHeader("x-marks", marks.join("|").slice(0, 500));
-    return res.status(400).json({ ok: false, error: "failed-to-read-body", detail: e?.message, marks });
-  }
+} catch (e: any) {
+  marks.push(`readBodyFail=${e?.message || String(e)}`);
+  res.setHeader("x-marks", marks.join("|").slice(0, 500));
+  return res
+    .status(400)
+    .json({ ok: false, error: "failed-to-read-body", detail: e?.message, marks });
+}
 
   // 2) Verifioi Stripe-allekirjoitus
-  if (!sig) {
-  const sig = req.headers["stripe-signature"] as string | undefined;
-  marks.push(`hasSig=${!!sig}`);
+ const sig = req.headers["stripe-signature"] as string | undefined;
+marks.push(`hasSig=${!!sig}`);
+if (!sig) {
   res.setHeader("x-marks", marks.join("|").slice(0, 500));
-  return res.status(400).json({ ok: false, error: "missing-stripe-signature", marks });
-  }
+  return res
+    .status(400)
+    .json({ ok: false, error: "missing-stripe-signature", marks });
+}
+
 
   let event: Stripe.Event;
 
@@ -102,13 +111,9 @@ try {
   res.setHeader("x-marks", marks.join("|").slice(0, 500));
   return res
     .status(400)
-    .json({
-      ok: false,
-      error: "signature-verification-failed",
-      detail: e?.message,
-      marks,
-    });
+    .json({ ok: false, error: "signature-verification-failed", detail: e?.message, marks });
 }
+
 
     marks.push(`evOk type=${event.type} id=${event.id}`);
   } catch (e: any) {
