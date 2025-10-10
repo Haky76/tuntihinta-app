@@ -51,6 +51,14 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   // debug-header näkyy Vercelin oikeassa reunassa
   res.setHeader("x-webhook-version", "dbg-v3");
 
+  // ---- EARLY DEBUG (näkyy Vercelissa jos console kerätään) ----
+console.error("WEBHOOK ENTER v3 @", new Date().toISOString(), {
+  method: req.method,
+  host: req.headers.host,
+  vercelId: (req.headers["x-vercel-id"] as string) || null,
+});
+// --------------------------------------------------------------
+
   const marks: string[] = [];
   marks.push(`start method=${req.method}`);
 
@@ -162,6 +170,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
 const out = { ok: true, marks };
 console.error("WEBHOOK OUT >>>", JSON.stringify(out, null, 2));
+// pieni viive että console ehtii keräytyä Vercelin paneeliin
 await new Promise((resolve) => setTimeout(resolve, 200));
 return res.status(200).json(out);
 
