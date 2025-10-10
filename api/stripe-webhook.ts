@@ -52,7 +52,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   res.setHeader("x-webhook-version", "dbg-v3");
 
   // ---- EARLY DEBUG (näkyy Vercelissa jos console kerätään) ----
-console.error("WEBHOOK ENTER v3 @", new Date().toISOString(), {
+  console.log("WEBHOOK ENTER log", new Date().toISOString());
+  console.error("WEBHOOK ENTER v3 @", new Date().toISOString(), {
   method: req.method,
   host: req.headers.host,
   vercelId: (req.headers["x-vercel-id"] as string) || null,
@@ -168,16 +169,20 @@ console.error("WEBHOOK ENTER v3 @", new Date().toISOString(), {
       marks.push(`ignored type=${event.type}`);
     }
 
+// success-haara
 const out = { ok: true, marks };
 console.error("WEBHOOK OUT >>>", JSON.stringify(out, null, 2));
-// pieni viive että console ehtii keräytyä Vercelin paneeliin
-await new Promise((resolve) => setTimeout(resolve, 200));
+console.log("WEBHOOK OUT log", out);
+await new Promise((resolve) => setTimeout(resolve, 500)); // 200 -> 500
+res.setHeader("x-marks", marks.join("|").slice(0, 500));
 return res.status(200).json(out);
 
-} catch (err: any) {
-  const out = { ok: false, error: err?.message || String(err), marks };
+// catch-haara
+const out = { ok: false, error: err?.message || String(err), marks };
 console.error("WEBHOOK OUT >>>", JSON.stringify(out, null, 2));
-await new Promise((resolve) => setTimeout(resolve, 200)); // pieni viive logien flush
+console.log("WEBHOOK OUT log", out);
+await new Promise((resolve) => setTimeout(resolve, 500)); // 200 -> 500
+res.setHeader("x-marks", marks.join("|").slice(0, 500));
 return res.status(200).json(out);
 
 }
