@@ -65,6 +65,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
   if (req.method !== "POST") {
     marks.push("bad-method");
+    res.setHeader("x-marks", marks.join("|").slice(0, 500));
     return res.status(405).json({ ok: false, error: "method-not-allowed", marks });
   }
 
@@ -75,23 +76,40 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     marks.push(`body=${buf.length}b`);
   } catch (e: any) {
     marks.push(`readBodyFail=${e?.message || String(e)}`);
+    res.setHeader("x-marks", marks.join("|").slice(0, 500));
     return res.status(400).json({ ok: false, error: "failed-to-read-body", detail: e?.message, marks });
   }
 
   // 2) Verifioi Stripe-allekirjoitus
+  if (!sig) {
   const sig = req.headers["stripe-signature"] as string | undefined;
   marks.push(`hasSig=${!!sig}`);
-  if (!sig) {
-    return res.status(400).json({ ok: false, error: "missing-stripe-signature", marks });
+  res.setHeader("x-marks", marks.join("|").slice(0, 500));
+  return res.status(400).json({ ok: false, error: "missing-stripe-signature", marks });
   }
 
   let event: Stripe.Event;
-  try {
-    event = stripe.webhooks.constructEvent(
-      buf,
-      sig,
-      process.env.STRIPE_WEBHOOK_SECRET as string
-    );
+
+try {
+  event = stripe.webhooks.constructEvent(
+    buf,
+    sig,
+    process.env.STRIPE_WEBHOOK_SECRET as string
+  );
+  marks.push(`sigOk`);
+} catch (e: any) {
+  marks.push(`sigVerifyFail=${e?.message || String(e)}`);
+  res.setHeader("x-marks", marks.join("|").slice(0, 500));
+  return res
+    .status(400)
+    .json({
+      ok: false,
+      error: "signature-verification-failed",
+      detail: e?.message,
+      marks,
+    });
+}
+
     marks.push(`evOk type=${event.type} id=${event.id}`);
   } catch (e: any) {
     marks.push(`evFail=${e?.message || String(e)}`);
